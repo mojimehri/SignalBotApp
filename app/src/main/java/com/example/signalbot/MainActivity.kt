@@ -118,10 +118,10 @@ class MainActivity : AppCompatActivity() {
 
     inner class Bridge {
 
-        /** درخواست HTTP به Yahoo Finance — فقط دامنه مجاز */
+        /** درخواست HTTP به Twelve Data — فقط دامنه مجاز */
         @JavascriptInterface
         fun get(urlStr: String, id: String) {
-            if (!urlStr.startsWith("https://query1.finance.yahoo.com/")) {
+            if (!urlStr.startsWith("https://api.twelvedata.com/")) {
                 reply(id, false, "\"blocked\"")
                 return
             }
