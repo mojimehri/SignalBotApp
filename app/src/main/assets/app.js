@@ -58,18 +58,23 @@ function nativeGet(url){
   });
 }
 
-// ---- دریافت کندل ----
-async function fetchCandles(ticker, tf){
-  const {interval,range}=TIMEFRAMES[tf];
-  const url=`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=${interval}&range=${range}`;
-  const body=await nativeGet(url);
-  const data=JSON.parse(body);
-  const res=data.chart.result[0];
-  const q=res.indicators.quote[0];
+// ---- دریافت کندل (Twelve Data) ----
+const KEY_STORE="td_key_v1";
+function getKey(){ try{ return localStorage.getItem(KEY_STORE)||""; }catch(_){ return ""; } }
+function setKey(k){ try{ localStorage.setItem(KEY_STORE,k); }catch(_){} }
+
+async function fetchCandles(symbol, tf){
+  const key=getKey();
+  if(!key) throw new Error("API Key وارد نشده است");
+  const {interval,size}=TIMEFRAMES[tf];
+  const url=`https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=${interval}&outputsize=${size}&order=ASC&timezone=UTC&apikey=${encodeURIComponent(key)}`;
+  const data=JSON.parse(await nativeGet(url));
+  if(data.status==="error"||!data.values) throw new Error(data.message||"پاسخ نامعتبر از Twelve Data");
   const out=[];
-  for(let i=0;i<(res.timestamp||[]).length;i++){
-    const t=res.timestamp[i],o=q.open[i],h=q.high[i],l=q.low[i],c=q.close[i];
-    if(o==null||h==null||l==null||c==null) continue;
+  for(const v of data.values){
+    const t=Date.parse(v.datetime.replace(" ","T")+"Z")/1000;
+    const o=+v.open,h=+v.high,l=+v.low,c=+v.close;
+    if(isNaN(t)||isNaN(o)||isNaN(h)||isNaN(l)||isNaN(c)) continue;
     out.push([t,o,h,l,c]);
   }
   return out;
@@ -83,14 +88,9 @@ async function cycle(){
   const {pair,tf,level}=state;
   const ticker=PAIRS[pair];
   const sec=TIMEFRAMES[tf].sec;
-  const minScore=LEVELS[level][1];
-  const htfKey=HTF[tf];
 
   try{
-    const [cs,htfCs]=await Promise.all([
-      fetchCandles(ticker,tf),
-      fetchCandles(ticker,htfKey)
-    ]);
+    const cs=await fetchCandles(ticker,tf);
 
     if(cs.length<MIN_CANDLES){
       state.error=`داده کافی نیست (${cs.length} کندل)`; render(); return;
@@ -106,7 +106,8 @@ async function cycle(){
     for(const s of [...state.pending]){
       if(now>=s.resultTs){
         const exit=closed.find(c=>c[0]===s.resultTs);
-        const exitPrice=exit?exit[4]:last[4];
+        if(!exit && now<s.resultTs+sec*3) continue;
+        const exitPrice=exit?exit[4]:s.entry;
         let res;
         if(Math.abs(exitPrice-s.entry)<1e-10) res="TIE";
         else if((exitPrice>s.entry)===(s.dir==="CALL")) res="WIN";
@@ -129,7 +130,7 @@ async function cycle(){
     }
     state.lastEval[evalKey]=ts;
 
-    const {direction,score,reasons,info}=evaluate(closed,htfCs.slice(0,-1),minScore);
+    const {direction,score,reasons,info}=evaluate(closed,level);
     state.panel=info;
     state.error=""; state.stale=false;
 
@@ -185,7 +186,7 @@ function overallStats(){
 }
 
 // ---- رندر داشبورد ----
-function fmt(n){ return n==null?"—":n.toFixed(5); }
+function fmt(n){ return n==null?"—":n.toFixed(n>=20?3:5); }
 function $id(id){ return document.getElementById(id); }
 
 function render(){
@@ -237,11 +238,7 @@ function render(){
   $id("panelCard").style.display=(s.running&&p)?"block":"none";
   if(s.running&&p){
     $id("chips").innerHTML=(p.votes||[]).map(v=>`<div class="chip ${v.vote==="CALL"?"up":v.vote==="PUT"?"dn":""}">${v.name}<b>${v.text}</b></div>`).join("");
-    const tr=p.trend==="up"?"صعودی ↗":p.trend==="down"?"نزولی ↘":"نامشخص";
-    const htfLabel=HTF[s.tf];
-    const srLine=p.srNote?`<br>📍 <b>${p.srNote}</b>`:"";
-    const pbLine=p.pinbar?`<br>🕯️ الگو: <b>${p.pinbar}</b>`:"";
-    $id("gates").innerHTML=`قیمت: ${fmt(p.price)} • روند (${htfLabel}): <b>${tr}</b> • ADX: <b>${p.adxVal==null?"—":p.adxVal.toFixed(0)}</b><br>CALL: ${p.ncall} / PUT: ${p.nput} (حداقل: ${LEVELS[s.level][1]})${srLine}${pbLine}`;
+    $id("gates").innerHTML=`قیمت: ${fmt(p.price)} • روند: <b>${p.trendLabel}</b><br>حداقل واکنش قبلی سطح: <b>${p.minTouches}</b> بار`;
     if(p.note) $id("warn").innerHTML+=`<div class="note" style="margin-top:8px">ℹ️ ${p.note}</div>`;
   }
 
@@ -275,7 +272,15 @@ document.addEventListener("DOMContentLoaded",()=>{
   const levelSel=$id("levelSel");
   Object.entries(LEVELS).forEach(([k,v])=>{ const o=document.createElement("option"); o.value=k; o.textContent=v[0]; levelSel.appendChild(o); });
 
+  // فیلد API Key (بدون نیاز به تغییر index.html)
+  const keyRow=document.createElement("div"); keyRow.className="row";
+  keyRow.innerHTML='<input id="keyIn" type="text" placeholder="Twelve Data API Key" style="flex:1;background:var(--card);color:var(--tx);border:1px solid var(--line);border-radius:10px;padding:9px 10px;font-size:13px;direction:ltr;outline:none"><button class="btn" id="keySave" style="flex:0 0 auto;background:var(--blue);color:#fff;padding:9px 14px">ذخیره</button>';
+  pairSel.parentNode.parentNode.insertBefore(keyRow,pairSel.parentNode);
+  $id("keyIn").value=getKey();
+  $id("keySave").onclick=()=>{ setKey($id("keyIn").value.trim()); state.error=""; render(); };
+
   $id("btnStart").onclick=()=>{
+    if(!getKey()){ state.error="اول API Key را وارد و ذخیره کنید"; render(); return; }
     start(pairSel.value, tfSel.value, levelSel.value);
     render();
   };
