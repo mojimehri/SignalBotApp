@@ -282,9 +282,10 @@ document.addEventListener("DOMContentLoaded",()=>{
   $id("btnStart").onclick=()=>{
     if(!getKey()){ state.error="اول API Key را وارد و ذخیره کنید"; render(); return; }
     start(pairSel.value, tfSel.value, levelSel.value);
+    try{ Android.startBg(); }catch(_){}
     render();
   };
-  $id("btnStop").onclick=()=>{ stop(); render(); };
+  $id("btnStop").onclick=()=>{ stop(); try{ Android.stopBg(); }catch(_){} render(); };
 
   render();
   setInterval(render, 2000);
